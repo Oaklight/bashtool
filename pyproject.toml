@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bashtool"
+dynamic = ["version"]
+description = "Shell command execution with built-in safety validation"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "Peng Ding", email = "oaklight.peng@gmail.com" }]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["ruff>=0.11.0"]
+test = ["pytest>=7.0.0"]
+
+[project.urls]
+Repository = "https://github.com/Oaklight/bashtool"
+Issues = "https://github.com/Oaklight/bashtool/issues"
+
+[tool.setuptools]
+py-modules = ["bashtool"]
+
+[tool.setuptools.dynamic]
+version = { attr = "bashtool.__version__" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 99
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]

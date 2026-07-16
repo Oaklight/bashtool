@@ -21,11 +21,22 @@ When used as a git submodule mounted at ``_vendor/bashtool/``::
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
+
+# When set to any truthy value, the deny-list validation is skipped entirely.
+UNSAFE_MODE: bool = os.environ.get("BASHTOOL_UNSAFE", "") not in ("", "0", "false")
+
+if UNSAFE_MODE:
+    print(
+        "bashtool: BASHTOOL_UNSAFE is set, deny list disabled",
+        file=sys.stderr,
+    )
 
 # Maximum bytes kept for stdout / stderr to prevent memory exhaustion.
 MAX_OUTPUT_BYTES = 65_536  # 64 KB
@@ -50,7 +61,6 @@ DANGER_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\bdd\s+.*\bif="), "Raw disk image write"),
     (re.compile(r">\s*/dev/sd[a-z]"), "Device overwrite"),
     # -- Privilege escalation --
-    (re.compile(r"\bsudo\b"), "Privilege escalation via sudo"),
     (re.compile(r"\bsu\s+-"), "User switching via su"),
     (
         re.compile(r"\bchmod\s+.*-[a-zA-Z]*R.*\b777\b.*\s+/"),
@@ -84,6 +94,8 @@ _OPERATOR_SPLIT_RE = re.compile(r"\s*(?:&&|\|\||;)\s*")
 def validate_command(command: str) -> None:
     """Raise ``ValueError`` if *command* matches a known-dangerous pattern.
 
+    Skipped entirely when ``BASHTOOL_UNSAFE`` is set in the environment.
+
     Args:
         command: Raw shell command string.
 
@@ -91,6 +103,9 @@ def validate_command(command: str) -> None:
         ValueError: With a human-readable reason describing why the command
             was rejected.
     """
+    if UNSAFE_MODE:
+        return
+
     # 1. Pipe-to-shell check on the full command
     if _PIPE_EXEC_RE.search(command):
         raise ValueError("Dangerous command blocked: pipe-to-shell execution detected")

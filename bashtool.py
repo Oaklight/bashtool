@@ -29,14 +29,18 @@ from pathlib import Path
 
 __version__ = "0.2.0"
 
-# When set to any truthy value, the deny-list validation is skipped entirely.
-UNSAFE_MODE: bool = os.environ.get("BASHTOOL_UNSAFE", "") not in ("", "0", "false")
+_UNSAFE_WARNED = False
 
-if UNSAFE_MODE:
-    print(
-        "bashtool: BASHTOOL_UNSAFE is set, deny list disabled",
-        file=sys.stderr,
-    )
+
+def _is_unsafe_mode() -> bool:
+    """Check whether deny-list validation is disabled via environment."""
+    global _UNSAFE_WARNED
+    enabled = os.environ.get("BASHTOOL_UNSAFE", "") not in ("", "0", "false")
+    if enabled and not _UNSAFE_WARNED:
+        print("bashtool: BASHTOOL_UNSAFE is set, deny list disabled", file=sys.stderr)
+        _UNSAFE_WARNED = True
+    return enabled
+
 
 # Maximum bytes kept for stdout / stderr to prevent memory exhaustion.
 MAX_OUTPUT_BYTES = 65_536  # 64 KB
@@ -103,7 +107,7 @@ def validate_command(command: str) -> None:
         ValueError: With a human-readable reason describing why the command
             was rejected.
     """
-    if UNSAFE_MODE:
+    if _is_unsafe_mode():
         return
 
     # 1. Pipe-to-shell check on the full command

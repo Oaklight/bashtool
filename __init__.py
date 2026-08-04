@@ -9,7 +9,6 @@ Re-export facade.  When this repo is mounted as a git submodule (e.g. at
 from .bashtool import (
     DANGER_PATTERNS,
     MAX_OUTPUT_BYTES,
-    UNSAFE_MODE,
     BashTool,
     __version__,
     truncate,
@@ -19,7 +18,6 @@ from .bashtool import (
 __all__ = [
     "DANGER_PATTERNS",
     "MAX_OUTPUT_BYTES",
-    "UNSAFE_MODE",
     "BashTool",
     "__version__",
     "truncate",

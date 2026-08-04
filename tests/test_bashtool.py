@@ -1,11 +1,26 @@
 """Unit tests for bashtool module."""
 
 import importlib
+import sys
 import tempfile
 
 import pytest
 
 from bashtool import BashTool, validate_command
+
+
+def _reload_bashtool():
+    """Reload bashtool to pick up env var changes.
+
+    Handles both flat-module installs (pip) and package layout (repo root /
+    git submodule) where __init__.py re-exports from the .bashtool submodule.
+    """
+    sub = sys.modules.get("bashtool.bashtool")
+    if sub is not None:
+        importlib.reload(sub)
+    mod = sys.modules["bashtool"]
+    importlib.reload(mod)
+    return mod
 
 
 class TestBashToolExecute:
@@ -144,21 +159,17 @@ class TestUnsafeMode:
 
     def test_unsafe_mode_skips_validation(self, monkeypatch):
         monkeypatch.setenv("BASHTOOL_UNSAFE", "1")
-        import bashtool.bashtool as mod
-
-        importlib.reload(mod)
+        mod = _reload_bashtool()
         try:
             assert mod.UNSAFE_MODE is True
             mod.validate_command("rm -rf /")
         finally:
             monkeypatch.delenv("BASHTOOL_UNSAFE")
-            importlib.reload(mod)
+            _reload_bashtool()
 
     def test_unsafe_mode_off_by_default(self, monkeypatch):
         monkeypatch.delenv("BASHTOOL_UNSAFE", raising=False)
-        import bashtool.bashtool as mod
-
-        importlib.reload(mod)
+        mod = _reload_bashtool()
         assert mod.UNSAFE_MODE is False
         with pytest.raises(ValueError):
             mod.validate_command("rm -rf /")
@@ -166,14 +177,12 @@ class TestUnsafeMode:
     @pytest.mark.parametrize("val", ["0", "false", ""])
     def test_unsafe_mode_falsy_values(self, monkeypatch, val):
         monkeypatch.setenv("BASHTOOL_UNSAFE", val)
-        import bashtool.bashtool as mod
-
-        importlib.reload(mod)
+        mod = _reload_bashtool()
         try:
             assert mod.UNSAFE_MODE is False
         finally:
             monkeypatch.delenv("BASHTOOL_UNSAFE", raising=False)
-            importlib.reload(mod)
+            _reload_bashtool()
 
 
 class TestBashToolEdgeCases:

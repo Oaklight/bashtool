@@ -141,6 +141,13 @@ class TestBashToolDangerousCommands:
 class TestUnsafeMode:
     """Verify BASHTOOL_UNSAFE environment variable behavior."""
 
+    @pytest.fixture(autouse=True)
+    def _reset_warned(self, monkeypatch):
+        import sys
+
+        impl = sys.modules.get("bashtool.bashtool") or sys.modules["bashtool"]
+        monkeypatch.setattr(impl, "_UNSAFE_WARNED", False)
+
     def test_unsafe_mode_skips_validation(self, monkeypatch):
         monkeypatch.setenv("BASHTOOL_UNSAFE", "1")
         validate_command("rm -rf /")

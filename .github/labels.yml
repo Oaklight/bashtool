@@ -6,7 +6,7 @@
 # Never rename a label by deleting and recreating it — that strips the
 # label from every issue. Use: gh label edit <old> --name <new>
 
-# === Primary type labels — exactly one per issue (at most) ===
+# === Primary type labels — at most one per issue ===
 - name: "bug"
   color: "CF222E"
   description: "Something isn't working"

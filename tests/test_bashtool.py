@@ -197,9 +197,17 @@ class TestBashToolSafeCommands:
             "rm -rf /var/tmp/cache",
             "rm -rf /srv/app/build",
             "rm -rf /tmp/../tmp/build",
-            # Only rm's own operands are judged, not quoted text.
+            "rm -rf /etc/nginx/cache",
+            "rm -rf /var/log/app/*",
+            "rm -rf /opt/app/out",
+            "rm -rf build-*/release",
+            "rm -rf ../build/*",
+            # Only rm's own operands are judged, not quoted text (#6 review).
             "echo 'rm -rf /'",
+            "echo '$(rm -rf /)'",
+            "echo '`rm -rf /`'",
             "git commit -m 'fix: avoid exec/eval pitfalls'",
+            'echo "$(date)"',
         ],
     )
     def test_safe_commands_pass(self, cmd):
@@ -251,6 +259,41 @@ class TestBashToolDangerousCommands:
             ("rm -rf /*", "Recursive forced deletion"),
             ("busybox rm -rf /", "Recursive forced deletion"),
             ("bash -c 'rm -rf /'", "Recursive forced deletion"),
+            # Spellings the kernel and the shell treat as protected paths
+            # (#6 review).
+            ("rm -rf //", "Recursive forced deletion"),
+            ("rm -rf //etc", "Recursive forced deletion"),
+            ("rm -rf ///", "Recursive forced deletion"),
+            ("rm -rf ./", "Recursive forced deletion"),
+            ("rm -rf ../", "Recursive forced deletion"),
+            ("rm -rf .//", "Recursive forced deletion"),
+            ("rm -rf ../..", "Recursive forced deletion"),
+            ("rm -rf ../../*", "Recursive forced deletion"),
+            ("rm -rf /tmp/../../etc", "Recursive forced deletion"),
+            ("rm -rf /home/../etc", "Recursive forced deletion"),
+            # Shell-expanded spellings of a system directory.
+            ("rm -rf /et?", "Recursive forced deletion"),
+            ("rm -rf /et[c]", "Recursive forced deletion"),
+            ("rm -rf /tm?", "Recursive forced deletion"),
+            ("rm -rf /{etc,usr}", "Recursive forced deletion"),
+            # Trees that cannot be reinstalled are protected recursively.
+            ("rm -rf /usr/lib", "Recursive forced deletion"),
+            ("rm -rf /boot/grub", "Recursive forced deletion"),
+            ("rm -rf /var/lib", "Recursive forced deletion"),
+            ("rm -rf /etc/ssh", "Recursive forced deletion"),
+            ("rm -rf /dev/sda", "Recursive forced deletion"),
+            ("rm -rf /proc/1", "Recursive forced deletion"),
+            # A substitution body is a command of its own.
+            ("rm -rf $(rm -rf /)", "Recursive forced deletion"),
+            ("echo `rm -rf /`", "Recursive forced deletion"),
+            ("X=$(rm -rf /)", "Recursive forced deletion"),
+            ('rm -rf "$(rm -rf /)"', "Recursive forced deletion"),
+            # Wrappers inside -exec, and xargs supplying the operands.
+            ("find / -exec sudo -u root rm -rf {} +", "Recursive forced deletion"),
+            ("find / -exec env -i rm -rf {} +", "Recursive forced deletion"),
+            ("find . -exec sh -c 'rm -rf /' +", "Recursive forced deletion"),
+            ("xargs rm -r -f", "Recursive forced deletion"),
+            ("find / | xargs rm -rf", "Recursive forced deletion"),
             ("eval 'echo hi'", "evaluation"),
             ("sudo eval 'echo hi'", "evaluation"),
             ("exec /bin/sh", "exec"),

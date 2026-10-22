@@ -9,13 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
-- `rm` targets are now judged structurally instead of by absolute-path shape. The old rule
-  blocked every recursive force delete of an absolute path, so routine cleanup such as
-  `rm -rf /tmp/build` or `rm -rf /srv/app/cache` was refused (#6). The new check blocks the
-  root, system directories (`/etc`, `/usr`, `/var`, ...), `$HOME`/`~` and any path under
-  `/home/` or `/root/`, `.`, `..`, and wildcard sweeps whose prefix resolves to one of those
-  (including `/tmp/../*`, which normalises to `/*`). Deletion is only refused when both
-  recursive and force flags are present, as before.
+- `rm` targets are judged structurally instead of by absolute-path shape, so routine cleanup
+  such as `rm -rf /tmp/build` or `rm -rf /srv/app/cache` is allowed again (#6). Protected
+  targets are the root; the system directory names themselves (`/etc`, `/var`, `/home`, …);
+  the trees that cannot be reinstalled (`/bin`, `/sbin`, `/lib*`, `/usr/bin`, `/usr/lib*`,
+  `/boot`, `/dev`, `/proc`, `/sys`, `/var/lib`, `/etc/ssh`, `/etc/sudoers`, `/etc/systemd`);
+  `$HOME`/`~`/`${HOME}` and anything under `/home/` or `/root/`; `.`, `..` and any target made
+  only of parent segments (`../..`); and wildcard sweeps over any of those. Application
+  subtrees stay deletable (`/etc/nginx/cache`, `/opt/app/out`, `/var/log/app/*`,
+  `/var/tmp/cache`, `/tmp/*`). Only recursive-and-force deletion is refused, as before.
+- Spellings the kernel and the shell treat as those paths are normalised before judging:
+  `//etc` and `//` (a run of slashes is collapsed), trailing slashes (`./`, `../`, `.//`),
+  and glob/brace forms whose first component is expanded by the shell (`/et?`, `/et[c]`,
+  `/tm?`, `/{etc,usr}`). All of these were allowed by the first version of this rewrite,
+  and `//etc` was additionally blocked by 0.3.2.
+- A command substitution body is now validated as a command of its own
+  (`$(rm -rf /)`, `` `rm -rf /` ``, `X=$(rm -rf /)`), which the structural `rm` check could
+  not see because `shlex` does not tokenise it. Text inside single quotes is still ignored.
+- `find -exec` payloads are unwrapped before the `rm` check, so
+  `find / -exec sudo -u root rm -rf {} +` and `find / -exec env -i rm -rf {} +` are blocked,
+  and a shell payload inside `-exec` (`find . -exec sh -c 'rm -rf /' +`) is validated
+  recursively.
+- `xargs rm -rf` without operands is blocked: the wrapper supplies whatever the pipeline
+  produced (`find / | xargs rm -rf`), so the call has no safe reading.
 - Dangerous-looking text inside a quoted argument no longer trips the deny list, because `rm`
   is only inspected in command position. `echo 'rm -rf /'` and commit messages mentioning
   `exec` run normally.
@@ -24,6 +40,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - `busybox` and `toybox` joined the wrapper set, so `busybox rm -rf /` is unwrapped and judged
   like `rm -rf /`.
+
+### Known limits
+
+- Relative spellings of a protected tree (`rm -rf usr/lib`, `rm -rf home/user`) are not
+  blocked, because the deny list has no working directory to resolve them against. Pass an
+  absolute path to have it judged.
+- A target whose protected-ness depends on runtime values (`rm -rf "$VAR"`) cannot be
+  resolved statically and is allowed; so is `{}` outside a `find -exec` payload.
 
 ## [0.3.2] - 2026-10-22
 

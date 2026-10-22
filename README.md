@@ -6,7 +6,7 @@ Shell command execution with built-in safety validation. Zero external dependenc
 
 `BashTool.execute()` runs shell commands via `subprocess.run` with:
 
-- **Safety deny-list** -- 20+ patterns block dangerous commands before execution (recursive `rm` of root/home/wildcards, `eval`/`exec` as the command, fork bombs, `git push --force`, etc.). `rm` flags are normalised, so `rm -rf /x`, `rm -r -f /x`, `rm --recursive --force /x` are treated identically; wrapper chains (`sudo -u …`, `env -i`, `nice -n`, `timeout 5`, `xargs`), `find -exec` payloads and `sh -c` payloads are all inspected as commands.
+- **Safety deny-list** -- 20+ patterns block dangerous commands before execution (destructive `rm`, `eval`/`exec` as the command, fork bombs, `git push --force`, etc.). `rm` flags are normalised, so `rm -rf /x`, `rm -r -f /x`, `rm --recursive --force /x` are treated identically; wrapper chains (`sudo -u …`, `env -i`, `nice -n`, `timeout 5`, `xargs`, `busybox`), `find -exec` payloads and `sh -c` payloads are all inspected as commands. `rm` targets are judged structurally, not by absolute-path shape: the root, system directories, `$HOME`, `~`, `.`, `..` and wildcard sweeps over any of those are blocked, while concrete paths elsewhere (`rm -rf /tmp/build`) and dangerous-looking text inside quotes (`echo 'rm -rf /'`) are allowed.
 - **Output truncation** -- stdout/stderr capped at 64 KB to prevent memory exhaustion
 - **Timeout** -- configurable wall-clock timeout that kills the whole process tree
   (the shell *and* whatever it started, with a SIGTERM grace period) and raises
@@ -95,7 +95,7 @@ The deny-list itself, as `list[tuple[re.Pattern[str], str]]`. Importable for ext
 
 | Category | Examples |
 |----------|----------|
-| Destructive filesystem | `rm -rf /`, `mkfs`, `dd if=`, `> /dev/sd*` |
+| Destructive filesystem | `rm -rf /`, `rm -rf /etc`, `rm -rf $HOME`, `rm -rf /*`, `mkfs`, `dd if=`, `> /dev/sd*` |
 | Privilege escalation | `sudo`, `su -`, `chmod -R 777 /`, `chown -R` |
 | Code injection | `eval`, `exec` as the invoked command (not `find -exec` or a `grep` pattern) |
 | Fork bomb | `:(){ :\|:& };:` |

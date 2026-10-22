@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.3.3] - 2026-10-22
+
+### Fixed
+
+- `rm` targets are now judged structurally instead of by absolute-path shape. The old rule
+  blocked every recursive force delete of an absolute path, so routine cleanup such as
+  `rm -rf /tmp/build` or `rm -rf /srv/app/cache` was refused (#6). The new check blocks the
+  root, system directories (`/etc`, `/usr`, `/var`, ...), `$HOME`/`~` and any path under
+  `/home/` or `/root/`, `.`, `..`, and wildcard sweeps whose prefix resolves to one of those
+  (including `/tmp/../*`, which normalises to `/*`). Deletion is only refused when both
+  recursive and force flags are present, as before.
+- Dangerous-looking text inside a quoted argument no longer trips the deny list, because `rm`
+  is only inspected in command position. `echo 'rm -rf /'` and commit messages mentioning
+  `exec` run normally.
+
+### Changed
+
+- `busybox` and `toybox` joined the wrapper set, so `busybox rm -rf /` is unwrapped and judged
+  like `rm -rf /`.
+
 ## [0.3.2] - 2026-10-22
 
 ### Fixed

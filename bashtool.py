@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import posixpath
 import re
 import shlex
 import signal
@@ -33,7 +34,7 @@ import sys
 import time
 from pathlib import Path
 
-__version__ = "0.3.2"
+__version__ = "0.3.3"
 
 _UNSAFE_WARNED = False
 
@@ -60,13 +61,9 @@ MAX_OUTPUT_BYTES = 65_536  # 64 KB
 
 DANGER_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     # -- Destructive filesystem operations --
-    (
-        re.compile(
-            r"\brm\s+.*-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+[/~*]"
-            r"|\brm\s+.*-[a-zA-Z]*f[a-zA-Z]*r[a-zA-Z]*\s+[/~*]"
-        ),
-        "Recursive forced deletion of root, home, or wildcard paths",
-    ),
+    # ``rm`` is judged structurally by ``_segment_is_dangerous_rm``: a regex
+    # could not merge split flags and matched ``rm -rf /`` inside quoted
+    # arguments (#6).
     (re.compile(r"\bmkfs\b"), "Filesystem formatting"),
     (re.compile(r"\bdd\s+.*\bif="), "Raw disk image write"),
     (re.compile(r">\s*/dev/sd[a-z]"), "Device overwrite"),
@@ -126,7 +123,20 @@ _OPERATOR_SPLIT_RE = re.compile(r"\s*(?:&&|\|\||;|\|)\s*")
 
 
 _WRAPPERS = frozenset(
-    {"sudo", "doas", "command", "builtin", "env", "nohup", "time", "nice", "timeout", "xargs"}
+    {
+        "sudo",
+        "doas",
+        "command",
+        "builtin",
+        "env",
+        "nohup",
+        "time",
+        "nice",
+        "timeout",
+        "xargs",
+        "busybox",
+        "toybox",
+    }
 )
 
 # Options that consume the following token as their value, per wrapper.
@@ -181,7 +191,33 @@ _ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=\S*")
 _DURATION_RE = re.compile(r"^\d+(?:\.\d+)?[smhd]?$")
 _FALSE_VALUES = frozenset({"false", "0", "no", "off"})
 _SHELLS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "ash", "fish"})
-_PROTECTED_RM_TARGETS = ("/", "~", "*")
+#: Directories whose recursive deletion is catastrophic.  Deeper paths are
+#: judged separately: home trees are protected in full, other system
+#: subtrees are not, so routine cleanup such as ``rm -rf /tmp/build`` works.
+_SYSTEM_DIRS = frozenset(
+    {
+        "/",
+        "/bin",
+        "/boot",
+        "/dev",
+        "/etc",
+        "/home",
+        "/lib",
+        "/lib64",
+        "/opt",
+        "/proc",
+        "/root",
+        "/run",
+        "/sbin",
+        "/srv",
+        "/sys",
+        "/usr",
+        "/var",
+    }
+)
+_HOME_PREFIXES = ("/home/", "/root/")
+_HOME_VARS = frozenset({"$HOME", "${HOME}"})
+_HOME_VAR_PREFIXES = ("$HOME/", "${HOME}/")
 _MAX_SHELL_C_DEPTH = 4
 
 
@@ -284,8 +320,50 @@ def _rm_is_dangerous(words: list[str], *, brace_target: bool = False) -> bool:
 
     if not (recursive and force):
         return False
-    protected = _PROTECTED_RM_TARGETS + (("{}",) if brace_target else ())
-    return any(target.startswith(protected) for target in targets)
+    return any(_target_is_protected(target, brace_target=brace_target) for target in targets)
+
+
+def _target_is_protected(target: str, *, brace_target: bool = False) -> bool:
+    """Whether deleting *target* recursively and forcibly is catastrophic.
+
+    Only the paths whose loss takes a machine or a home directory with it
+    are protected — root, the system directory names themselves, anything
+    under a home directory, and wildcards that expand to those.  A concrete
+    path elsewhere (``/tmp/build``, ``/srv/app/out``) is ordinary cleanup
+    and must stay allowed (#6).
+
+    Args:
+        target: One ``rm`` operand, after shell dequoting.
+        brace_target: Treat ``{}`` as protected (a ``find -exec`` payload,
+            where it expands to the matched paths).
+
+    Returns:
+        True when the target is protected.
+    """
+    if brace_target and target == "{}":
+        return True
+    if target in (".", ".."):
+        return True
+    if target.startswith("~"):
+        return True
+    if target in _HOME_VARS or target.startswith(_HOME_VAR_PREFIXES):
+        return True
+
+    if "*" in target:
+        raw_prefix = target.split("*", 1)[0].rstrip("/")
+        # Normalise so ``/tmp/../*`` is judged as ``/*``.
+        prefix = posixpath.normpath(raw_prefix) if raw_prefix else ""
+        if (
+            prefix in ("", ".", "..", "/")
+            or prefix.startswith("~")
+            or prefix in _HOME_VARS
+            or prefix in _SYSTEM_DIRS
+            or prefix.startswith(_HOME_PREFIXES)
+        ):
+            return True
+
+    normalized = posixpath.normpath(target)
+    return normalized in _SYSTEM_DIRS or normalized.startswith(_HOME_PREFIXES)
 
 
 def _find_exec_payloads(words: list[str]) -> list[list[str]]:

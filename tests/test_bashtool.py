@@ -192,6 +192,14 @@ class TestBashToolSafeCommands:
             # A shell payload that only mentions exec as an argument.
             "sh -c 'grep exec f'",
             "find . -exec grep -l TODO {} +",
+            # Concrete paths outside home trees are routine cleanup (#6).
+            "rm -rf /tmp/clementine-probe-dir",
+            "rm -rf /var/tmp/cache",
+            "rm -rf /srv/app/build",
+            "rm -rf /tmp/../tmp/build",
+            # Only rm's own operands are judged, not quoted text.
+            "echo 'rm -rf /'",
+            "git commit -m 'fix: avoid exec/eval pitfalls'",
         ],
     )
     def test_safe_commands_pass(self, cmd):
@@ -232,6 +240,17 @@ class TestBashToolDangerousCommands:
             ("rm --recursive --force /home/user", "Recursive forced deletion"),
             ("rm -Rf /home/user", "Recursive forced deletion"),
             ("echo ok | rm -rf /home/user", "Recursive forced deletion"),
+            # Protected targets beyond the bare root and home forms (#6).
+            ("rm -rf /etc", "Recursive forced deletion"),
+            ("rm -rf /usr", "Recursive forced deletion"),
+            ("rm -rf /home/user/project", "Recursive forced deletion"),
+            ("rm -rf /root/.ssh", "Recursive forced deletion"),
+            ("rm -rf $HOME", "Recursive forced deletion"),
+            ("rm -rf ${HOME}/data", "Recursive forced deletion"),
+            ("rm -rf ..", "Recursive forced deletion"),
+            ("rm -rf /*", "Recursive forced deletion"),
+            ("busybox rm -rf /", "Recursive forced deletion"),
+            ("bash -c 'rm -rf /'", "Recursive forced deletion"),
             ("eval 'echo hi'", "evaluation"),
             ("sudo eval 'echo hi'", "evaluation"),
             ("exec /bin/sh", "exec"),

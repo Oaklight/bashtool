@@ -215,9 +215,47 @@ _SYSTEM_DIRS = frozenset(
         "/var",
     }
 )
+#: Trees that are not recoverable by reinstalling a package, plus the
+#: credential stores, protected *recursively*.  Other system subtrees stay
+#: deletable because that is routine cleanup: ``/etc/nginx/cache``,
+#: ``/srv/app/out``, ``/var/log/app``, ``/var/tmp/cache`` and ``/tmp/build``
+#: are all allowed (#6 review).
+_PROTECTED_TREES = (
+    "/bin",
+    "/boot",
+    "/dev",
+    "/etc/ssh",
+    "/etc/sudoers",
+    "/etc/systemd",
+    "/lib",
+    "/lib32",
+    "/lib64",
+    "/libx32",
+    "/proc",
+    "/sbin",
+    "/sys",
+    "/usr/bin",
+    "/usr/lib",
+    "/usr/lib32",
+    "/usr/lib64",
+    "/usr/libx32",
+    "/usr/libexec",
+    "/usr/sbin",
+    "/var/lib",
+)
 _HOME_PREFIXES = ("/home/", "/root/")
 _HOME_VARS = frozenset({"$HOME", "${HOME}"})
 _HOME_VAR_PREFIXES = ("$HOME/", "${HOME}/")
+#: Characters the shell expands in a path: glob (``*?[``) and brace
+#: expansion (``{a,b}``).  Any of them means the deleted set is chosen by
+#: the shell, not by the caller of this module.
+_WILDCARD_CHARS = "*?[{"
+#: POSIX keeps exactly two leading slashes through ``normpath``, but the
+#: kernel treats ``//etc`` as ``/etc``, so runs are collapsed first.
+_SLASH_RUN_RE = re.compile(r"/{2,}")
+#: ``../..`` and deeper: a target made only of parent segments has no
+#: knowable depth, so it is treated like ``..``.
+_DOT_DOT_ONLY_RE = re.compile(r"(?:\.\.)(?:/\.\.)*")
 _MAX_SHELL_C_DEPTH = 4
 
 
@@ -284,7 +322,12 @@ def _skip_command_prefix(words: list[str]) -> int:
     return index
 
 
-def _rm_is_dangerous(words: list[str], *, brace_target: bool = False) -> bool:
+def _rm_is_dangerous(
+    words: list[str],
+    *,
+    brace_target: bool = False,
+    appended_targets: bool = False,
+) -> bool:
     """Whether tokens starting at an ``rm`` invocation force-delete protected paths.
 
     Args:
@@ -292,6 +335,10 @@ def _rm_is_dangerous(words: list[str], *, brace_target: bool = False) -> bool:
         brace_target: Count a ``{}`` target as protected.  True for a
             ``find -exec``/``-execdir`` payload, where ``{}`` expands to the
             matched paths — the tree-deleting idiom (#191 review).
+        appended_targets: The operands are supplied by a wrapper rather than
+            written here (``xargs``).  ``find / | xargs rm -rf`` then has no
+            safe reading, since the caller cannot see what is deleted
+            (#6 review).
 
     Returns:
         True when recursive and force flags are combined with a target under
@@ -320,17 +367,32 @@ def _rm_is_dangerous(words: list[str], *, brace_target: bool = False) -> bool:
 
     if not (recursive and force):
         return False
+    if appended_targets:
+        return True
     return any(_target_is_protected(target, brace_target=brace_target) for target in targets)
+
+
+def _is_under(path: str, tree: str) -> bool:
+    """Whether *path* is *tree* itself or inside it, on a path boundary."""
+    return path == tree or path.startswith(tree + "/")
+
+
+def _wildcard_index(target: str) -> int:
+    """Index of the first shell-expanded character in *target*, or ``-1``."""
+    positions = [target.find(char) for char in _WILDCARD_CHARS if char in target]
+    return min(positions, default=-1)
 
 
 def _target_is_protected(target: str, *, brace_target: bool = False) -> bool:
     """Whether deleting *target* recursively and forcibly is catastrophic.
 
     Only the paths whose loss takes a machine or a home directory with it
-    are protected — root, the system directory names themselves, anything
-    under a home directory, and wildcards that expand to those.  A concrete
-    path elsewhere (``/tmp/build``, ``/srv/app/out``) is ordinary cleanup
-    and must stay allowed (#6).
+    are protected — root, the system directory names themselves, the trees
+    that cannot be reinstalled (``/usr/bin``, ``/lib*``, ``/boot``, …),
+    anything under a home directory, and the shell spellings that expand to
+    those (``//etc``, ``./``, ``../..``, ``/et?``, ``/{etc,usr}``).  A
+    concrete path elsewhere (``/tmp/build``, ``/srv/app/out``,
+    ``/etc/nginx/cache``) is ordinary cleanup and stays allowed (#6).
 
     Args:
         target: One ``rm`` operand, after shell dequoting.
@@ -342,15 +404,24 @@ def _target_is_protected(target: str, *, brace_target: bool = False) -> bool:
     """
     if brace_target and target == "{}":
         return True
-    if target in (".", ".."):
-        return True
+
+    # ``//etc`` is ``/etc`` to the kernel, but POSIX keeps exactly two
+    # leading slashes through ``normpath``; collapse runs before comparing.
+    target = _SLASH_RUN_RE.sub("/", target)
     if target.startswith("~"):
         return True
     if target in _HOME_VARS or target.startswith(_HOME_VAR_PREFIXES):
         return True
 
-    if "*" in target:
-        raw_prefix = target.split("*", 1)[0].rstrip("/")
+    wildcard_at = _wildcard_index(target)
+    if wildcard_at >= 0:
+        if target.startswith("/") and any(
+            char in target.lstrip("/").split("/", 1)[0] for char in _WILDCARD_CHARS
+        ):
+            # ``/et?``, ``/tm*`` and ``/{etc,usr}`` glob the root level: the
+            # shell chooses the deleted set, so the pattern is refused.
+            return True
+        raw_prefix = target[:wildcard_at].rstrip("/")
         # Normalise so ``/tmp/../*`` is judged as ``/*``.
         prefix = posixpath.normpath(raw_prefix) if raw_prefix else ""
         if (
@@ -359,11 +430,21 @@ def _target_is_protected(target: str, *, brace_target: bool = False) -> bool:
             or prefix in _HOME_VARS
             or prefix in _SYSTEM_DIRS
             or prefix.startswith(_HOME_PREFIXES)
+            or any(_is_under(prefix, tree) for tree in _PROTECTED_TREES)
         ):
             return True
+        # Judge the literal prefix: ``/var/log/app/*`` deletes a subtree of
+        # an application directory, which is cleanup, not catastrophe.
+        target = prefix
 
     normalized = posixpath.normpath(target)
-    return normalized in _SYSTEM_DIRS or normalized.startswith(_HOME_PREFIXES)
+    if normalized in (".", "..") or _DOT_DOT_ONLY_RE.fullmatch(normalized):
+        return True
+    return (
+        normalized in _SYSTEM_DIRS
+        or normalized.startswith(_HOME_PREFIXES)
+        or any(_is_under(normalized, tree) for tree in _PROTECTED_TREES)
+    )
 
 
 def _find_exec_payloads(words: list[str]) -> list[list[str]]:
@@ -392,15 +473,18 @@ def _command_name(segment: str) -> str | None:
     return os.path.basename(words[command])
 
 
-def _segment_is_dangerous_rm(segment: str) -> bool:
+def _segment_is_dangerous_rm(segment: str, depth: int = 0) -> bool:
     """Whether *segment* contains a dangerous ``rm`` at any command position.
 
     Covers a plain invocation, one behind a wrapper, and the payload of
-    ``find -exec``/``-execdir``, whose command the previous unanchored
-    pattern used to catch by accident.
+    ``find -exec``/``-execdir`` — including a wrapper around the payload
+    command (``find / -exec sudo rm -rf {} +``) and a shell payload
+    (``find . -exec sh -c 'rm -rf /' +``).
 
     Args:
         segment: One shell segment (already split on operators).
+        depth: Current ``sh -c`` nesting depth, so a shell payload found
+            inside ``-exec`` cannot restart the recursion budget.
 
     Returns:
         True when a dangerous ``rm`` is found.
@@ -412,14 +496,80 @@ def _segment_is_dangerous_rm(segment: str) -> bool:
 
     name = os.path.basename(words[command])
     if name == "rm":
-        return _rm_is_dangerous(words[command:])
-    if name == "find":
-        return any(
-            _rm_is_dangerous(payload, brace_target=True)
-            for payload in _find_exec_payloads(words)
-            if os.path.basename(payload[0]) == "rm"
+        # ``xargs rm -rf`` has no operands of its own; the wrapper supplies
+        # whatever the pipeline produced, so the call cannot be judged safe.
+        return _rm_is_dangerous(
+            words[command:],
+            appended_targets=any(os.path.basename(word) == "xargs" for word in words[:command]),
         )
+    if name == "find":
+        for payload in _find_exec_payloads(words):
+            start = _skip_command_prefix(payload)
+            if start >= len(payload):
+                continue
+            if os.path.basename(payload[start]) == "rm" and _rm_is_dangerous(
+                payload[start:], brace_target=True
+            ):
+                return True
+            shell_payload = _shell_c_payload(payload)
+            if shell_payload is not None and depth < _MAX_SHELL_C_DEPTH:
+                _validate(shell_payload, depth + 1)
     return False
+
+
+def _read_balanced(command: str, start: int) -> tuple[str, int]:
+    """Return the body of a ``$( … )`` starting at *start* and the next index."""
+    depth = 1
+    index = start
+    while index < len(command):
+        char = command[index]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return command[start:index], index + 1
+        index += 1
+    return command[start:], len(command)
+
+
+def _command_substitutions(command: str) -> list[str]:
+    """Return the bodies of ``$( … )`` and backtick substitutions.
+
+    A substitution body is a command in its own right, so it is validated
+    like one; a ``shlex`` tokenizer cannot see it (#6 review).  Text inside
+    single quotes is skipped because the shell does not expand it there.
+
+    Args:
+        command: One shell segment.
+
+    Returns:
+        The raw command strings of every substitution, in source order.
+    """
+    bodies: list[str] = []
+    index = 0
+    in_single_quote = False
+    while index < len(command):
+        char = command[index]
+        if char == "'":
+            in_single_quote = not in_single_quote
+            index += 1
+        elif in_single_quote:
+            index += 1
+        elif char == "\\":
+            index += 2
+        elif char == "$" and command.startswith("$(", index):
+            body, index = _read_balanced(command, index + 2)
+            bodies.append(body)
+        elif char == "`":
+            end = command.find("`", index + 1)
+            if end == -1:
+                break
+            bodies.append(command[index + 1 : end])
+            index = end + 1
+        else:
+            index += 1
+    return bodies
 
 
 def _shell_c_payload(words: list[str]) -> str | None:
@@ -472,11 +622,16 @@ def _validate(command: str, depth: int) -> None:
         stripped = segment.strip()
         if not stripped:
             continue
-        if _segment_is_dangerous_rm(stripped):
+        if _segment_is_dangerous_rm(stripped, depth):
             raise ValueError(
                 "Dangerous command blocked: Recursive forced deletion of "
                 "root, home, or wildcard paths"
             )
+        if depth < _MAX_SHELL_C_DEPTH:
+            # ``$(rm -rf /)`` and ``` `rm -rf /` ``` run just as surely as
+            # ``sh -c ...``; validate each body as its own command.
+            for body in _command_substitutions(stripped):
+                _validate(body, depth + 1)
         command_name = _command_name(stripped)
         if command_name == "eval":
             raise ValueError("Dangerous command blocked: Arbitrary code evaluation")

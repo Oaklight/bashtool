@@ -122,6 +122,19 @@ _FULL_COMMAND_PATTERNS: list[tuple[re.Pattern[str], str]] = [
 # double quotes is text, not a new command.
 _SEGMENT_DELIMITERS = ";&|\n"
 
+#: Characters that group or negate a command: ``( cmd )``, ``{ cmd; }``,
+#: ``! cmd``.  They are stripped at the edges of a segment so the command
+#: word is still the first word (#6 review).
+_GROUP_LEAD_CHARS = "({!"
+_GROUP_TRAIL_CHARS = ")}"
+
+#: Shell keywords that can precede a command in a compound statement.  The
+#: segment splitter leaves ``then rm -rf /`` and ``do rm -rf /`` as their own
+#: segments, so the keyword has to be skipped before the command word.
+_COMPOUND_KEYWORDS = frozenset(
+    {"then", "do", "else", "elif", "if", "while", "until", "fi", "done", "esac", "!"}
+)
+
 
 _WRAPPERS = frozenset(
     {
@@ -267,6 +280,23 @@ def _as_text(value: str | bytes | None) -> str:
     return value or ""
 
 
+def _strip_group_wrappers(segment: str) -> str:
+    """Remove grouping characters wrapped around a segment.
+
+    ``( rm -rf / )``, ``{ rm -rf /; }`` and ``! rm -rf /`` otherwise leave
+    ``(rm`` or ``!`` as the command word and hide the ``rm`` (#6 review).
+    Only edge characters are removed, so a ``find -exec … {} +`` payload
+    keeps its braces.
+
+    Args:
+        segment: One segment produced by :func:`_split_segments`.
+
+    Returns:
+        The segment without leading ``( { !`` or trailing ``) }``.
+    """
+    return segment.lstrip(_GROUP_LEAD_CHARS + " \t").rstrip(_GROUP_TRAIL_CHARS + " \t")
+
+
 def _split_segments(command: str) -> list[str]:
     """Split *command* on shell separators that appear outside quotes.
 
@@ -349,6 +379,9 @@ def _skip_command_prefix(words: list[str]) -> int:
         if _ASSIGNMENT_RE.fullmatch(word):
             index += 1
             continue
+        if word in _COMPOUND_KEYWORDS:
+            index += 1
+            continue
         wrapper = os.path.basename(word)
         if wrapper not in _WRAPPERS:
             break
@@ -409,9 +442,11 @@ def _rm_is_dangerous(
         elif token.startswith("--"):
             name, _, value = token[2:].partition("=")
             enabled = value.lower() not in _FALSE_VALUES
-            if name == "recursive":
+            # GNU accepts any unambiguous prefix, so ``--rec`` and ``--f``
+            # select the same flags as ``--recursive`` and ``--force``.
+            if "recursive".startswith(name) and name:
                 recursive = recursive or enabled
-            elif name == "force":
+            elif "force".startswith(name) and name:
                 force = force or enabled
         elif token.startswith("-") and token != "-":
             recursive = recursive or "r" in token or "R" in token
@@ -692,7 +727,7 @@ def _validate(command: str, depth: int) -> None:
     # 2. Segment by shell operators and check each part
     segments = _split_segments(command)
     for segment in segments:
-        stripped = segment.strip()
+        stripped = _strip_group_wrappers(segment)
         if not stripped:
             continue
         if _segment_is_dangerous_rm(stripped, depth):

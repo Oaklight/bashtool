@@ -210,6 +210,12 @@ class TestBashToolSafeCommands:
             'echo "$(date)"',
             "echo 'say \"hi\" $(rm -rf /)'",
             "git commit -m 'fix:\\n\\nrm -rf / is blocked now'",
+            "bash -lc 'echo hi'",
+            "echo hi && (echo bye)",
+            "(cd /tmp && ls)",
+            "{ echo hi; }",
+            "if [ 1 ]; then echo ok; fi",
+            "echo '(rm -rf /)'",
             "echo 'a; rm -rf / b'",
         ],
     )
@@ -299,6 +305,23 @@ class TestBashToolDangerousCommands:
             ("echo hi & rm -rf /", "Recursive forced deletion"),
             ("bash -lc 'rm -rf /'", "Recursive forced deletion"),
             ("sh -ec 'rm -rf /'", "Recursive forced deletion"),
+            # Compound statements put a keyword or group character in
+            # front of the command word (#6 review).
+            ("( rm -rf / )", "Recursive forced deletion"),
+            ("(rm -rf /)", "Recursive forced deletion"),
+            ("echo hi && (rm -rf /)", "Recursive forced deletion"),
+            ("{ rm -rf /; }", "Recursive forced deletion"),
+            ("if true; then rm -rf /; fi", "Recursive forced deletion"),
+            ("if [ 1 ]; then rm -rf /etc; else true; fi", "Recursive forced deletion"),
+            ("while true; do rm -rf /; done", "Recursive forced deletion"),
+            ("! rm -rf /", "Recursive forced deletion"),
+            ('bash -c "(rm -rf /)"', "Recursive forced deletion"),
+            ("sh -c '{ rm -rf /; }'", "Recursive forced deletion"),
+            # GNU long options accept any unambiguous prefix.
+            ("rm --rec -f /etc", "Recursive forced deletion"),
+            ("rm --recur -f /etc", "Recursive forced deletion"),
+            ("rm --f /etc -r", "Recursive forced deletion"),
+            ("rm --rec -f --no-preserve-root /", "Recursive forced deletion"),
             ('rm -rf "$(rm -rf /)"', "Recursive forced deletion"),
             # Wrappers inside -exec, and xargs supplying the operands.
             ("find / -exec sudo -u root rm -rf {} +", "Recursive forced deletion"),

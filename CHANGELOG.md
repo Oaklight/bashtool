@@ -41,6 +41,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `while …; do rm -rf /; done`, `! rm -rf /`, `echo hi && (rm -rf /)` and
   `sh -c '{ rm -rf /; }'` are blocked. `{}` inside a `find -exec` payload is untouched
   because only edge characters are stripped.
+- Case statements and function definitions no longer hide their bodies: a leading
+  `name()` header is removed, and a `case <word> in` header plus each arm's `pattern)`
+  prefix, so `case x in a) rm -rf /;; esac` and `f() { rm -rf /; }` are blocked.
+- Backslash-newline continuations are joined before the command is tokenised, so
+  `rm -rf` followed by a continuation and `/` is judged as `rm -rf /`.
 - GNU long options are matched by unique prefix, so `rm --rec -f`, `rm --recur -f` and
   `rm --f -r` are treated like `rm --recursive --force`, including with
   `--no-preserve-root`.

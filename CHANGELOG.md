@@ -34,6 +34,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Clustered shell short flags are unwrapped: `bash -lc 'rm -rf /'` and `sh -ec 'rm -rf /'`
   are now blocked like `bash -c '…'`. Only a token starting with a single `-` that contains
   `c` is treated as the shell's `-c`.
+- Compound statements no longer hide the command word: leading group characters (`(`, `{`,
+  `!`) are stripped from a segment and the shell keywords that can precede a command
+  (`then`, `do`, `else`, `elif`, `if`, `while`, `until`, `fi`, `done`, `esac`, `!`) are
+  skipped, so `( rm -rf / )`, `{ rm -rf /; }`, `if …; then rm -rf /; fi`,
+  `while …; do rm -rf /; done`, `! rm -rf /`, `echo hi && (rm -rf /)` and
+  `sh -c '{ rm -rf /; }'` are blocked. `{}` inside a `find -exec` payload is untouched
+  because only edge characters are stripped.
+- GNU long options are matched by unique prefix, so `rm --rec -f`, `rm --recur -f` and
+  `rm --f -r` are treated like `rm --recursive --force`, including with
+  `--no-preserve-root`.
 - `find -exec` payloads are unwrapped before the `rm` check, so
   `find / -exec sudo -u root rm -rf {} +` and `find / -exec env -i rm -rf {} +` are blocked,
   and a shell payload inside `-exec` (`find . -exec sh -c 'rm -rf /' +`) is validated

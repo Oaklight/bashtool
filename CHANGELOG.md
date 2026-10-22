@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - 2026-10-22
+
+### Changed
+
+- **Breaking:** `BashTool.execute()` now raises `CommandTimeoutError` on timeout instead of
+  returning `{"timed_out": True, "exit_code": -1}` alongside successful results. A killed
+  command is a failure, and returning it as data let MCP hosts report `isError: false` so a
+  model reasoned from empty output. The exception subclasses `TimeoutError` and carries
+  `command`, `timeout`, `stdout`, `stderr`, `exit_code` (`-1`), `timed_out` (`True`) and
+  `to_dict()` for callers that want the previous shape.
+- Commands now run in their own session (`start_new_session=True`) and a timeout kills the
+  whole process group (SIGTERM, then SIGKILL after a grace period). Previously only the
+  `shell=True` child was killed, leaving background children such as `sleep 300 &` running.
+- Partial output written before the kill is preserved on the exception instead of being
+  discarded.
+
 ## [0.2.0] - 2026-08-04
 
 ### Added

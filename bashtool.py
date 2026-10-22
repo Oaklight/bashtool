@@ -117,9 +117,10 @@ _FULL_COMMAND_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (_FORK_BOMB_RE, "Fork bomb"),
 ]
 
-# Shell operator split (&&, ||, ;, |) -- simplistic but sufficient for the
-# deny-list use-case.  We do NOT attempt full AST parsing.
-_OPERATOR_SPLIT_RE = re.compile(r"\s*(?:&&|\|\||;|\|)\s*")
+# Characters that separate one command from the next.  Splitting is done by
+# ``_split_segments``, which honours quoting: a separator inside single or
+# double quotes is text, not a new command.
+_SEGMENT_DELIMITERS = ";&|\n"
 
 
 _WRAPPERS = frozenset(
@@ -264,6 +265,59 @@ def _as_text(value: str | bytes | None) -> str:
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="replace")
     return value or ""
+
+
+def _split_segments(command: str) -> list[str]:
+    """Split *command* on shell separators that appear outside quotes.
+
+    The shell ends a command at ``;``, ``&``, ``&&``, ``||``, ``|`` and a
+    newline, but only outside quotes: a commit message may legitimately
+    contain any of them as text (#6 review).  ``2>&1`` and ``&>file`` split
+    too, which is harmless — the fragments are not commands that the deny
+    list recognises.
+
+    Args:
+        command: The raw command string.
+
+    Returns:
+        The command segments, in order; empty segments are included and
+        skipped by the caller.
+    """
+    segments: list[str] = []
+    current: list[str] = []
+    index = 0
+    in_single_quote = False
+    in_double_quote = False
+    while index < len(command):
+        char = command[index]
+        if in_single_quote or in_double_quote:
+            current.append(char)
+            if char == "'" and in_single_quote:
+                in_single_quote = False
+            elif char == '"' and in_double_quote:
+                in_double_quote = False
+            index += 1
+        elif char == "'":
+            in_single_quote = True
+            current.append(char)
+            index += 1
+        elif char == '"':
+            in_double_quote = True
+            current.append(char)
+            index += 1
+        elif char == "\\":
+            # An escaped separator is literal, e.g. ``find -exec … \\;``.
+            current.append(command[index : index + 2])
+            index += 2
+        elif char in _SEGMENT_DELIMITERS:
+            segments.append("".join(current))
+            current = []
+            index += 1
+        else:
+            current.append(char)
+            index += 1
+    segments.append("".join(current))
+    return segments
 
 
 def _tokenize(segment: str) -> list[str]:
@@ -593,7 +647,14 @@ def _shell_c_payload(words: list[str]) -> str | None:
         return None
     rest = words[command + 1 :]
     for index, token in enumerate(rest):
-        if token == "-c" and index + 1 < len(rest):
+        # ``-c`` may be clustered with other short flags (``-lc``, ``-ec``),
+        # and a shell only accepts ``-c`` as a short flag (#6 review).
+        if (
+            token.startswith("-")
+            and not token.startswith("--")
+            and "c" in token[1:]
+            and index + 1 < len(rest)
+        ):
             return rest[index + 1]
     return None
 
@@ -629,7 +690,7 @@ def _validate(command: str, depth: int) -> None:
             raise ValueError(f"Dangerous command blocked: {reason}")
 
     # 2. Segment by shell operators and check each part
-    segments = _OPERATOR_SPLIT_RE.split(command)
+    segments = _split_segments(command)
     for segment in segments:
         stripped = segment.strip()
         if not stripped:

@@ -1,6 +1,7 @@
 """Unit tests for bashtool module."""
 
 import os
+import signal
 import tempfile
 import time
 
@@ -75,6 +76,46 @@ class TestBashToolExecute:
                 return
             time.sleep(0.05)
         pytest.fail(f"child process {pid} survived the timeout kill")
+
+    @pytest.mark.skipif(os.name != "posix", reason="process groups are POSIX-only")
+    def test_timeout_honors_the_grace_period(self, tmp_path, monkeypatch):
+        """A grandchild that cleans up on SIGTERM gets the grace time (#10).
+
+        The shell dies on SIGTERM immediately; the old loop watched the
+        shell, so SIGKILL followed ~20 ms later and a trapping child never
+        finished its cleanup.
+        """
+        marker = tmp_path / "cleaned.flag"
+        monkeypatch.setenv("BASHTOOL_TEST_MARK", str(marker))
+        command = (
+            'sh -c \'trap "sleep 0.2; touch $BASHTOOL_TEST_MARK; exit 0" TERM; '
+            "while :; do sleep 0.05; done' & wait"
+        )
+
+        with pytest.raises(CommandTimeoutError):
+            BashTool.execute(command, timeout=1)
+
+        assert marker.exists(), "grace period was skipped; child did not clean up"
+
+    @pytest.mark.skipif(os.name != "posix", reason="process groups are POSIX-only")
+    def test_escaped_descendant_does_not_stall_or_lose_output(self):
+        """A ``setsid`` descendant keeps the pipe open but must not cost 5 s (#10)."""
+        command = "echo partial; setsid sleep 30 & echo $!; wait"
+        started = time.monotonic()
+        try:
+            with pytest.raises(CommandTimeoutError) as excinfo:
+                BashTool.execute(command, timeout=1)
+            elapsed = time.monotonic() - started
+        finally:
+            # The escaped child is not killed by the group signal; clean it up.
+            try:
+                pid = int(excinfo.value.stdout.strip().splitlines()[1])
+                os.kill(pid, signal.SIGKILL)
+            except (UnboundLocalError, ValueError, IndexError, ProcessLookupError):
+                pass
+
+        assert "partial" in excinfo.value.stdout, "partial output was discarded"
+        assert elapsed < 4.0, f"recovery waited {elapsed:.1f}s for an escaped descendant"
 
     @pytest.mark.skipif(os.name != "posix", reason="process groups are POSIX-only")
     def test_timeout_kills_a_stubborn_child(self):

@@ -33,7 +33,7 @@ import sys
 import time
 from pathlib import Path
 
-__version__ = "0.3.1"
+__version__ = "0.3.2"
 
 _UNSAFE_WARNED = False
 
@@ -183,6 +183,13 @@ _FALSE_VALUES = frozenset({"false", "0", "no", "off"})
 _SHELLS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "ash", "fish"})
 _PROTECTED_RM_TARGETS = ("/", "~", "*")
 _MAX_SHELL_C_DEPTH = 4
+
+
+def _as_text(value: str | bytes | None) -> str:
+    """Decode a captured stream value, tolerating the bytes form."""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value or ""
 
 
 def _tokenize(segment: str) -> list[str]:
@@ -514,12 +521,21 @@ def _kill_process_tree(proc: subprocess.Popen, grace: float = 0.5) -> None:
     except ProcessLookupError:
         return
 
+    # Wait for the *group*, not the shell: the shell exits on SIGTERM at
+    # once, which used to end the grace period after ~20 ms and deny a
+    # grandchild the cleanup time the grace exists for (#10).  ``poll()``
+    # reaps the shell so its zombie cannot keep the group alive.
     deadline = time.monotonic() + grace
-    while time.monotonic() < deadline and proc.poll() is None:
+    while time.monotonic() < deadline:
+        proc.poll()
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            break
         time.sleep(0.02)
 
-    # The shell may be gone while a grandchild survives; kill the group
-    # unconditionally rather than trusting the shell's exit.
+    # Something may ignore SIGTERM; kill the group unconditionally rather
+    # than trusting any member's exit.
     with contextlib.suppress(ProcessLookupError):
         os.killpg(pgid, signal.SIGKILL)
 
@@ -593,10 +609,18 @@ class BashTool:
         except subprocess.TimeoutExpired:
             _kill_process_tree(proc)
             try:
-                # Reap the killed tree and collect what it wrote.
-                stdout, stderr = proc.communicate(timeout=5)
-            except subprocess.TimeoutExpired:  # pragma: no cover - defensive
-                stdout, stderr = "", ""
+                # Reap the killed tree and collect what it wrote.  A
+                # descendant that left the session (setsid) keeps the pipe
+                # open and cannot be killed by the group signal, so bound
+                # this wait tightly instead of stalling for seconds (#10).
+                stdout, stderr = proc.communicate(timeout=1)
+            except subprocess.TimeoutExpired as exc:
+                # Keep whatever was captured before the deadline instead of
+                # discarding output the caller needs (#188).  In text mode
+                # the timeout path still hands the captured chunks back as
+                # bytes, so decode rather than dropping them (#10).
+                stdout = _as_text(exc.stdout)
+                stderr = _as_text(exc.stderr)
             raise CommandTimeoutError(command, timeout, stdout or "", stderr or "") from None
 
         return {

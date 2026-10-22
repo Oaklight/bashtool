@@ -216,6 +216,9 @@ class TestBashToolSafeCommands:
             "{ echo hi; }",
             "if [ 1 ]; then echo ok; fi",
             "echo '(rm -rf /)'",
+            "case x in a) echo ok;; esac",
+            "f() { echo hi; }",
+            "rm -rf \\\n/tmp/build",
             "echo 'a; rm -rf / b'",
         ],
     )
@@ -322,6 +325,14 @@ class TestBashToolDangerousCommands:
             ("rm --recur -f /etc", "Recursive forced deletion"),
             ("rm --f /etc -r", "Recursive forced deletion"),
             ("rm --rec -f --no-preserve-root /", "Recursive forced deletion"),
+            # Case arms, function bodies and line continuations.
+            ("case x in a) rm -rf /;; esac", "Recursive forced deletion"),
+            ("case x in a|b) rm -rf /etc;; *) true;; esac", "Recursive forced deletion"),
+            ("f() { rm -rf /; }", "Recursive forced deletion"),
+            ("f() ( rm -rf / )", "Recursive forced deletion"),
+            ("cmd() { sudo rm -rf /; }", "Recursive forced deletion"),
+            ("rm -rf \\\n/", "Recursive forced deletion"),
+            ("rm -rf /\\\netc", "Recursive forced deletion"),
             ('rm -rf "$(rm -rf /)"', "Recursive forced deletion"),
             # Wrappers inside -exec, and xargs supplying the operands.
             ("find / -exec sudo -u root rm -rf {} +", "Recursive forced deletion"),

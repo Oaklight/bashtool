@@ -280,21 +280,50 @@ def _as_text(value: str | bytes | None) -> str:
     return value or ""
 
 
-def _strip_group_wrappers(segment: str) -> str:
-    """Remove grouping characters wrapped around a segment.
+#: ``name()`` at the start of a segment is a function definition, whose
+#: body is a command list of its own.
+_FUNCTION_HEADER_RE = re.compile(r"^[A-Za-z_][\w.-]*\s*\(\s*\)\s*")
+#: ``case <word> in`` opens a case statement; each arm is ``pattern) cmd``.
+_CASE_HEADER_RE = re.compile(r"^case\b[^\n]*?\bin\b\s+")
+_CASE_ARM_RE = re.compile(r"^[^()\s]+\)\s*")
 
-    ``( rm -rf / )``, ``{ rm -rf /; }`` and ``! rm -rf /`` otherwise leave
-    ``(rm`` or ``!`` as the command word and hide the ``rm`` (#6 review).
-    Only edge characters are removed, so a ``find -exec … {} +`` payload
-    keeps its braces.
+
+def _strip_group_wrappers(segment: str) -> str:
+    """Remove the shell's grouping constructs from the edge of a segment.
+
+    ``( rm -rf / )``, ``{ rm -rf /; }``, ``! rm -rf /``, ``f() { rm -rf /; }``
+    and ``case x in a) rm -rf /;; esac`` otherwise leave ``(rm``, ``!``,
+    ``f()``, ``a)`` or ``case`` as the command word and hide the ``rm``
+    (#6 review).  Only edge constructs are removed, so a
+    ``find -exec … {} +`` payload keeps its braces.
 
     Args:
         segment: One segment produced by :func:`_split_segments`.
 
     Returns:
-        The segment without leading ``( { !`` or trailing ``) }``.
+        The segment with function headers, case headers and arms, and
+        leading ``( { !`` / trailing ``) }`` removed.
     """
-    return segment.lstrip(_GROUP_LEAD_CHARS + " \t").rstrip(_GROUP_TRAIL_CHARS + " \t")
+    text = _FUNCTION_HEADER_RE.sub("", segment)
+    text = _CASE_HEADER_RE.sub("", text)
+    text = _CASE_ARM_RE.sub("", text)
+    return text.lstrip(_GROUP_LEAD_CHARS + " \t").rstrip(_GROUP_TRAIL_CHARS + " \t")
+
+
+def _join_continuations(segment: str) -> str:
+    """Join backslash-newline continuations the way the shell does.
+
+    ``shlex`` keeps the pair inside the token, so a continued
+    ``rm -rf \\`` newline ``/`` would yield a target containing a newline and
+    slip past the classifier (#6 review).
+
+    Args:
+        segment: One raw shell segment.
+
+    Returns:
+        The segment with backslash-newline pairs removed.
+    """
+    return segment.replace("\\\n", "").replace("\\\r\n", "")
 
 
 def _split_segments(command: str) -> list[str]:
@@ -727,7 +756,7 @@ def _validate(command: str, depth: int) -> None:
     # 2. Segment by shell operators and check each part
     segments = _split_segments(command)
     for segment in segments:
-        stripped = _strip_group_wrappers(segment)
+        stripped = _strip_group_wrappers(_join_continuations(segment))
         if not stripped:
             continue
         if _segment_is_dangerous_rm(stripped, depth):

@@ -1,10 +1,12 @@
 """Unit tests for bashtool module."""
 
+import os
 import tempfile
+import time
 
 import pytest
 
-from bashtool import BashTool, validate_command
+from bashtool import BashTool, CommandTimeoutError, validate_command
 
 
 class TestBashToolExecute:
@@ -30,10 +32,66 @@ class TestBashToolExecute:
         assert result["exit_code"] == 42
         assert result["timed_out"] is False
 
-    def test_timeout(self):
-        result = BashTool.execute("sleep 10", timeout=1)
-        assert result["timed_out"] is True
-        assert result["exit_code"] == -1
+    def test_timeout_raises(self):
+        """A killed command is a failure, not a successful result (#188)."""
+        with pytest.raises(CommandTimeoutError) as excinfo:
+            BashTool.execute("sleep 10", timeout=1)
+
+        error = excinfo.value
+        assert error.timed_out is True
+        assert error.exit_code == -1
+        assert error.timeout == 1
+        assert "timed out after 1s" in str(error)
+        assert error.to_dict() == {
+            "stdout": "",
+            "stderr": "",
+            "exit_code": -1,
+            "timed_out": True,
+        }
+
+    def test_timeout_carries_partial_output(self):
+        """Output written before the kill is not lost."""
+        with pytest.raises(CommandTimeoutError) as excinfo:
+            BashTool.execute("echo before-sleep; sleep 10", timeout=1)
+
+        assert "before-sleep" in excinfo.value.stdout
+        assert "before-sleep" in str(excinfo.value)
+
+    @pytest.mark.skipif(os.name != "posix", reason="process groups are POSIX-only")
+    def test_timeout_kills_the_process_tree(self):
+        """A background child must not survive the timeout (#190)."""
+        # The shell prints the child's PID, then waits on it.  Killing only
+        # the shell would leave the child running.
+        command = "sleep 30 & echo $!; wait"
+        with pytest.raises(CommandTimeoutError) as excinfo:
+            BashTool.execute(command, timeout=1)
+
+        pid = int(excinfo.value.stdout.strip().splitlines()[0])
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.05)
+        pytest.fail(f"child process {pid} survived the timeout kill")
+
+    @pytest.mark.skipif(os.name != "posix", reason="process groups are POSIX-only")
+    def test_timeout_kills_a_stubborn_child(self):
+        """SIGTERM-ignoring children are SIGKILLed."""
+        command = "sh -c 'trap \"\" TERM; while :; do sleep 1; done' & echo $!; wait"
+        with pytest.raises(CommandTimeoutError) as excinfo:
+            BashTool.execute(command, timeout=1)
+
+        pid = int(excinfo.value.stdout.strip().splitlines()[0])
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.05)
+        pytest.fail(f"child process {pid} ignored SIGTERM and survived")
 
     def test_cwd(self):
         with tempfile.TemporaryDirectory() as tmpdir:

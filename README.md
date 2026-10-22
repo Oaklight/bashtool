@@ -8,7 +8,8 @@ Shell command execution with built-in safety validation. Zero external dependenc
 
 - **Safety deny-list** -- 20+ regex patterns block dangerous commands before execution (recursive `rm -rf`, `sudo`, `mkfs`, fork bombs, `git push --force`, etc.)
 - **Output truncation** -- stdout/stderr capped at 64 KB to prevent memory exhaustion
-- **Timeout** -- configurable wall-clock timeout with clean kill
+- **Timeout** -- configurable wall-clock timeout that kills the whole process tree
+  (the shell *and* whatever it started) and raises `CommandTimeoutError`
 - **Working directory** -- optional `cwd` parameter with existence validation
 
 ## Usage
@@ -55,9 +56,26 @@ Execute a shell command and return its output.
 - **timeout** (`int`): Max seconds before kill. Default 120.
 - **cwd** (`str | None`): Working directory. Default: current process cwd.
 
-Returns `dict` with keys: `stdout`, `stderr`, `exit_code`, `timed_out`.
+Returns `dict` with keys: `stdout`, `stderr`, `exit_code`, `timed_out` (`timed_out` is
+always `False` on a returned dict -- a timeout raises instead).
 
-Raises `ValueError` if the command matches a dangerous pattern, `FileNotFoundError` if `cwd` doesn't exist.
+Raises `ValueError` if the command matches a dangerous pattern, `FileNotFoundError` if
+`cwd` doesn't exist, and `CommandTimeoutError` when the timeout expires. The timeout
+error carries the partial `stdout` / `stderr` written before the kill, plus
+`exit_code == -1` and `to_dict()` for callers that want the old result shape:
+
+```python
+try:
+    result = BashTool.execute("sleep 10", timeout=1)
+except CommandTimeoutError as exc:
+    print(exc.stdout, exc.exit_code, exc.to_dict())
+```
+
+### `CommandTimeoutError`
+
+Raised when a command exceeds its timeout. Subclasses `TimeoutError`; fields:
+`command`, `timeout`, `stdout`, `stderr`, `exit_code` (`-1`), `timed_out` (`True`),
+and `to_dict()`.
 
 ### `validate_command(command) -> None`
 

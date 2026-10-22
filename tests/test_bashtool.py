@@ -146,6 +146,11 @@ class TestBashToolSafeCommands:
             # Recursive delete of a local build directory is normal work.
             "rm -rf ./build",
             "rm -r ./build",
+            # An explicit ``--recursive=false`` is not recursive.
+            "rm --recursive=false -f ./build/out.txt",
+            # A shell payload that only mentions exec as an argument.
+            "sh -c 'grep exec f'",
+            "find . -exec grep -l TODO {} +",
         ],
     )
     def test_safe_commands_pass(self, cmd):
@@ -189,6 +194,22 @@ class TestBashToolDangerousCommands:
             ("eval 'echo hi'", "evaluation"),
             ("sudo eval 'echo hi'", "evaluation"),
             ("exec /bin/sh", "exec"),
+            ('env exec "$X"', "exec"),
+            # Wrappers that take options must not hide the command.
+            ("sudo -u root rm -r -f /home/user", "Recursive forced deletion"),
+            ("env -i rm -r -f /home/user", "Recursive forced deletion"),
+            ("nice -n 5 rm -r -f /home/user", "Recursive forced deletion"),
+            ("timeout 5 rm -r -f /home/user", "Recursive forced deletion"),
+            ("xargs rm -r -f /home/user", "Recursive forced deletion"),
+            # ``find -exec`` payloads are commands of their own.
+            ("find / -exec rm -rf {} +", "Recursive forced deletion"),
+            ("find . -execdir rm -rf {} +", "Recursive forced deletion"),
+            ("find . -exec rm -rf /tmp/x {} +", "Recursive forced deletion"),
+            # Shell ``-c`` payloads are checked as commands too.
+            ("sh -c 'rm -r -f /home/user'", "Recursive forced deletion"),
+            ("bash -c 'exec \"$X\"'", "exec"),
+            # Only the pipe split makes this segment visible.
+            ("echo ok | eval 'echo hi'", "evaluation"),
         ],
     )
     def test_dangerous_commands_blocked(self, cmd, reason_fragment):

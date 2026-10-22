@@ -6,7 +6,7 @@ Shell command execution with built-in safety validation. Zero external dependenc
 
 `BashTool.execute()` runs shell commands via `subprocess.run` with:
 
-- **Safety deny-list** -- 20+ patterns block dangerous commands before execution (recursive `rm` of root/home/wildcards, `eval`/`exec` as the command, fork bombs, `git push --force`, etc.). `rm` flags are normalised, so `rm -rf /x`, `rm -r -f /x`, `rm --recursive --force /x` are treated identically.
+- **Safety deny-list** -- 20+ patterns block dangerous commands before execution (recursive `rm` of root/home/wildcards, `eval`/`exec` as the command, fork bombs, `git push --force`, etc.). `rm` flags are normalised, so `rm -rf /x`, `rm -r -f /x`, `rm --recursive --force /x` are treated identically; wrapper chains (`sudo -u …`, `env -i`, `nice -n`, `timeout 5`, `xargs`), `find -exec` payloads and `sh -c` payloads are all inspected as commands.
 - **Output truncation** -- stdout/stderr capped at 64 KB to prevent memory exhaustion
 - **Timeout** -- configurable wall-clock timeout that kills the whole process tree
   (the shell *and* whatever it started) and raises `CommandTimeoutError`

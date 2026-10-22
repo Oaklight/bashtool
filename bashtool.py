@@ -537,8 +537,10 @@ def _command_substitutions(command: str) -> list[str]:
     """Return the bodies of ``$( … )`` and backtick substitutions.
 
     A substitution body is a command in its own right, so it is validated
-    like one; a ``shlex`` tokenizer cannot see it (#6 review).  Text inside
-    single quotes is skipped because the shell does not expand it there.
+    like one; a ``shlex`` tokenizer cannot see it (#6 review).  Quoting is
+    tracked the way the shell does it: single quotes disable substitution,
+    double quotes allow it, and a quote character inside the other kind of
+    quote is literal (so ``echo "it's $(date)"`` still expands).
 
     Args:
         command: One shell segment.
@@ -549,26 +551,36 @@ def _command_substitutions(command: str) -> list[str]:
     bodies: list[str] = []
     index = 0
     in_single_quote = False
+    in_double_quote = False
     while index < len(command):
         char = command[index]
-        if char == "'":
-            in_single_quote = not in_single_quote
+        if in_single_quote:
+            in_single_quote = char != "'"
             index += 1
-        elif in_single_quote:
+            continue
+        if char == "'" and not in_double_quote:
+            in_single_quote = True
             index += 1
-        elif char == "\\":
+            continue
+        if char == '"':
+            in_double_quote = not in_double_quote
+            index += 1
+            continue
+        if char == "\\":
             index += 2
-        elif char == "$" and command.startswith("$(", index):
+            continue
+        if char == "$" and command.startswith("$(", index):
             body, index = _read_balanced(command, index + 2)
             bodies.append(body)
-        elif char == "`":
+            continue
+        if char == "`":
             end = command.find("`", index + 1)
             if end == -1:
                 break
             bodies.append(command[index + 1 : end])
             index = end + 1
-        else:
-            index += 1
+            continue
+        index += 1
     return bodies
 
 

@@ -208,6 +208,7 @@ class TestBashToolSafeCommands:
             "echo '`rm -rf /`'",
             "git commit -m 'fix: avoid exec/eval pitfalls'",
             'echo "$(date)"',
+            "echo 'say \"hi\" $(rm -rf /)'",
         ],
     )
     def test_safe_commands_pass(self, cmd):
@@ -287,6 +288,10 @@ class TestBashToolDangerousCommands:
             ("rm -rf $(rm -rf /)", "Recursive forced deletion"),
             ("echo `rm -rf /`", "Recursive forced deletion"),
             ("X=$(rm -rf /)", "Recursive forced deletion"),
+            # An apostrophe inside double quotes does not close the region.
+            ('echo "it\'s $(rm -rf /)"', "Recursive forced deletion"),
+            ('echo "it\'s `rm -rf /`"', "Recursive forced deletion"),
+            ('X="don\'t $(rm -rf /)"', "Recursive forced deletion"),
             ('rm -rf "$(rm -rf /)"', "Recursive forced deletion"),
             # Wrappers inside -exec, and xargs supplying the operands.
             ("find / -exec sudo -u root rm -rf {} +", "Recursive forced deletion"),

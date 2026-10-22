@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.3.2] - 2026-10-22
+
+### Fixed
+
+- The SIGTERM grace period now watches the whole process group instead of the shell. With
+  `shell=True` the shell exits on SIGTERM immediately, so the old loop ended after ~20 ms and
+  SIGKILLed children that were still cleaning up in their TERM handler (#10).
+- When a descendant leaves the session (`setsid`, a daemonising server) it keeps the stdout pipe
+  open. The recovery wait is now 1 second instead of 5, and output captured before the deadline is
+  kept rather than replaced with `""`. In text mode the timeout path hands that output back as
+  bytes; it is decoded now. Such a descendant cannot be killed with the process-group signal —
+  documented rather than silently waited on.
+
 ## [0.3.1] - 2026-10-22
 
 ### Fixed

@@ -26,6 +26,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - A command substitution body is now validated as a command of its own
   (`$(rm -rf /)`, `` `rm -rf /` ``, `X=$(rm -rf /)`), which the structural `rm` check could
   not see because `shlex` does not tokenise it. Text inside single quotes is still ignored.
+- Command separators are recognised only outside quotes: `;`, `&`, `&&`, `||`, `|` and a
+  newline now end a command, so `echo hi & rm -rf /` and `echo hi` followed by a newline and
+  `rm -rf /` are both caught, while a quoted multi-line commit message containing the same
+  text stays allowed. Command-like text after a single `&` and after a newline was previously
+  inspected as one segment and missed.
+- Clustered shell short flags are unwrapped: `bash -lc 'rm -rf /'` and `sh -ec 'rm -rf /'`
+  are now blocked like `bash -c '…'`. Only a token starting with a single `-` that contains
+  `c` is treated as the shell's `-c`.
 - `find -exec` payloads are unwrapped before the `rm` check, so
   `find / -exec sudo -u root rm -rf {} +` and `find / -exec env -i rm -rf {} +` are blocked,
   and a shell payload inside `-exec` (`find . -exec sh -c 'rm -rf /' +`) is validated

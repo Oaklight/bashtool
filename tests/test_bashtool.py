@@ -209,6 +209,8 @@ class TestBashToolSafeCommands:
             "git commit -m 'fix: avoid exec/eval pitfalls'",
             'echo "$(date)"',
             "echo 'say \"hi\" $(rm -rf /)'",
+            "git commit -m 'fix:\\n\\nrm -rf / is blocked now'",
+            "echo 'a; rm -rf / b'",
         ],
     )
     def test_safe_commands_pass(self, cmd):
@@ -292,6 +294,11 @@ class TestBashToolDangerousCommands:
             ('echo "it\'s $(rm -rf /)"', "Recursive forced deletion"),
             ('echo "it\'s `rm -rf /`"', "Recursive forced deletion"),
             ('X="don\'t $(rm -rf /)"', "Recursive forced deletion"),
+            # Separators outside quotes, and clustered shell flags.
+            ("echo hi\nrm -rf /", "Recursive forced deletion"),
+            ("echo hi & rm -rf /", "Recursive forced deletion"),
+            ("bash -lc 'rm -rf /'", "Recursive forced deletion"),
+            ("sh -ec 'rm -rf /'", "Recursive forced deletion"),
             ('rm -rf "$(rm -rf /)"', "Recursive forced deletion"),
             # Wrappers inside -exec, and xargs supplying the operands.
             ("find / -exec sudo -u root rm -rf {} +", "Recursive forced deletion"),

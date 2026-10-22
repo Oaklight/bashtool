@@ -6,7 +6,7 @@ Shell command execution with built-in safety validation. Zero external dependenc
 
 `BashTool.execute()` runs shell commands via `subprocess.run` with:
 
-- **Safety deny-list** -- 20+ regex patterns block dangerous commands before execution (recursive `rm -rf`, `sudo`, `mkfs`, fork bombs, `git push --force`, etc.)
+- **Safety deny-list** -- 20+ patterns block dangerous commands before execution (recursive `rm` of root/home/wildcards, `eval`/`exec` as the command, fork bombs, `git push --force`, etc.). `rm` flags are normalised, so `rm -rf /x`, `rm -r -f /x`, `rm --recursive --force /x` are treated identically.
 - **Output truncation** -- stdout/stderr capped at 64 KB to prevent memory exhaustion
 - **Timeout** -- configurable wall-clock timeout that kills the whole process tree
   (the shell *and* whatever it started) and raises `CommandTimeoutError`
@@ -95,7 +95,7 @@ The deny-list itself, as `list[tuple[re.Pattern[str], str]]`. Importable for ext
 |----------|----------|
 | Destructive filesystem | `rm -rf /`, `mkfs`, `dd if=`, `> /dev/sd*` |
 | Privilege escalation | `sudo`, `su -`, `chmod -R 777 /`, `chown -R` |
-| Code injection | `eval`, `exec` |
+| Code injection | `eval`, `exec` as the invoked command (not `find -exec` or a `grep` pattern) |
 | Fork bomb | `:(){ :\|:& };:` |
 | Git destructive | `git push --force`, `git reset --hard`, `git clean -f` |
 | System control | `shutdown`, `reboot`, `halt`, `kill -9 1` |

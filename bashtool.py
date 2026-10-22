@@ -125,8 +125,64 @@ _FULL_COMMAND_PATTERNS: list[tuple[re.Pattern[str], str]] = [
 _OPERATOR_SPLIT_RE = re.compile(r"\s*(?:&&|\|\||;|\|)\s*")
 
 
-_RM_COMMAND_PREFIXES = frozenset({"sudo", "command", "builtin"})
+_WRAPPERS = frozenset(
+    {"sudo", "doas", "command", "builtin", "env", "nohup", "time", "nice", "timeout", "xargs"}
+)
+
+# Options that consume the following token as their value, per wrapper.
+_WRAPPER_VALUE_OPTIONS: dict[str, frozenset[str]] = {
+    "sudo": frozenset(
+        {
+            "-u",
+            "--user",
+            "-g",
+            "--group",
+            "-p",
+            "--prompt",
+            "-C",
+            "--chdir",
+            "-h",
+            "--host",
+            "-r",
+            "--role",
+            "-t",
+            "--type",
+            "-U",
+            "--other-user",
+        }
+    ),
+    "doas": frozenset({"-u", "-C"}),
+    "env": frozenset({"-u", "--unset", "-C", "--chdir", "--split-string"}),
+    "nice": frozenset({"-n", "--adjustment"}),
+    "timeout": frozenset({"-s", "--signal", "-k", "--kill-after"}),
+    "xargs": frozenset(
+        {
+            "-n",
+            "--max-args",
+            "-I",
+            "--replace",
+            "-P",
+            "--max-procs",
+            "-L",
+            "--max-lines",
+            "-s",
+            "--max-chars",
+            "-d",
+            "--delimiter",
+            "-E",
+            "-a",
+            "--arg-file",
+            "-J",
+        }
+    ),
+}
+
+_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=\S*")
+_DURATION_RE = re.compile(r"^\d+(?:\.\d+)?[smhd]?$")
+_FALSE_VALUES = frozenset({"false", "0", "no", "off"})
+_SHELLS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "ash", "fish"})
 _PROTECTED_RM_TARGETS = ("/", "~", "*")
+_MAX_SHELL_C_DEPTH = 4
 
 
 def _tokenize(segment: str) -> list[str]:
@@ -137,39 +193,67 @@ def _tokenize(segment: str) -> list[str]:
         return segment.split()
 
 
-def _command_words(tokens: list[str]) -> list[str]:
-    """Return the tokens with leading sudo/command/env-assignment removed."""
-    index = 0
-    while index < len(tokens):
-        token = tokens[index]
-        if token in _RM_COMMAND_PREFIXES:
-            index += 1
-            continue
-        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=\S*", token):
-            index += 1
-            continue
-        break
-    return tokens[index:]
+def _skip_command_prefix(words: list[str]) -> int:
+    """Return the index of the command that actually runs.
 
-
-def _is_dangerous_rm(segment: str) -> bool:
-    """Whether *segment* force-deletes a protected path, however spelled.
-
-    The regex only understood clustered flags (``-rf``), so ``rm -r -f /x``
-    and ``rm --recursive --force /x`` walked through (#191).  Normalise the
-    flags instead of pattern-matching their spelling.
+    Skips wrapper programs (``sudo``, ``env``, ``nice``, ``timeout``,
+    ``xargs``, …), their options and values, and leading ``VAR=value``
+    assignments, so ``sudo -u root rm`` and ``timeout 5 rm`` are seen as
+    an ``rm`` invocation (#191 review).
 
     Args:
-        segment: One shell segment (already split on operators).
+        words: Tokenised command segment.
 
     Returns:
-        True when an ``rm`` invocation combines recursive and force flags
-        with a target under root, home, or a wildcard.
+        Index of the first token that is not a wrapper, option, or
+        assignment.
     """
-    words = _command_words(_tokenize(segment))
-    if not words or os.path.basename(words[0]) != "rm":
-        return False
+    index = 0
+    while index < len(words):
+        word = words[index]
+        if _ASSIGNMENT_RE.fullmatch(word):
+            index += 1
+            continue
+        wrapper = os.path.basename(word)
+        if wrapper not in _WRAPPERS:
+            break
+        index += 1
+        value_options = _WRAPPER_VALUE_OPTIONS.get(wrapper, frozenset())
+        if wrapper == "timeout" and index < len(words) and _DURATION_RE.match(words[index]):
+            index += 1
+        while index < len(words):
+            token = words[index]
+            if token == "--":
+                index += 1
+                break
+            if token.startswith("-") and token != "-":
+                index += 1
+                if token in value_options and index < len(words):
+                    index += 1
+                continue
+            break
+        # ``timeout`` accepts its duration after options; ``env`` accepts
+        # assignments after its options.
+        if wrapper == "timeout" and index < len(words) and _DURATION_RE.match(words[index]):
+            index += 1
+        while index < len(words) and _ASSIGNMENT_RE.fullmatch(words[index]):
+            index += 1
+    return index
 
+
+def _rm_is_dangerous(words: list[str], *, brace_target: bool = False) -> bool:
+    """Whether tokens starting at an ``rm`` invocation force-delete protected paths.
+
+    Args:
+        words: Tokens beginning with the ``rm`` command word.
+        brace_target: Count a ``{}`` target as protected.  True for a
+            ``find -exec``/``-execdir`` payload, where ``{}`` expands to the
+            matched paths — the tree-deleting idiom (#191 review).
+
+    Returns:
+        True when recursive and force flags are combined with a target under
+        root, home, a wildcard, or (when enabled) ``{}``.
+    """
     recursive = force = False
     targets: list[str] = []
     end_of_options = False
@@ -179,18 +263,92 @@ def _is_dangerous_rm(segment: str) -> bool:
         elif token == "--":
             end_of_options = True
         elif token.startswith("--"):
-            name = token[2:].split("=", 1)[0]
-            recursive = recursive or name == "recursive"
-            force = force or name == "force"
+            name, _, value = token[2:].partition("=")
+            enabled = value.lower() not in _FALSE_VALUES
+            if name == "recursive":
+                recursive = recursive or enabled
+            elif name == "force":
+                force = force or enabled
         elif token.startswith("-") and token != "-":
             recursive = recursive or "r" in token or "R" in token
             force = force or "f" in token
         else:
             targets.append(token)
 
-    return (
-        recursive and force and any(target.startswith(_PROTECTED_RM_TARGETS) for target in targets)
-    )
+    if not (recursive and force):
+        return False
+    protected = _PROTECTED_RM_TARGETS + (("{}",) if brace_target else ())
+    return any(target.startswith(protected) for target in targets)
+
+
+def _find_exec_payloads(words: list[str]) -> list[list[str]]:
+    """Return the command payloads of ``find -exec``/``-execdir`` clauses."""
+    payloads: list[list[str]] = []
+    index = 0
+    while index < len(words):
+        if words[index] in ("-exec", "-execdir"):
+            payload: list[str] = []
+            index += 1
+            while index < len(words) and words[index] not in (";", "+"):
+                payload.append(words[index])
+                index += 1
+            if payload:
+                payloads.append(payload)
+        index += 1
+    return payloads
+
+
+def _command_name(segment: str) -> str | None:
+    """Return the basename of the command that actually runs, if any."""
+    words = _tokenize(segment)
+    command = _skip_command_prefix(words)
+    if command >= len(words):
+        return None
+    return os.path.basename(words[command])
+
+
+def _segment_is_dangerous_rm(segment: str) -> bool:
+    """Whether *segment* contains a dangerous ``rm`` at any command position.
+
+    Covers a plain invocation, one behind a wrapper, and the payload of
+    ``find -exec``/``-execdir``, whose command the previous unanchored
+    pattern used to catch by accident.
+
+    Args:
+        segment: One shell segment (already split on operators).
+
+    Returns:
+        True when a dangerous ``rm`` is found.
+    """
+    words = _tokenize(segment)
+    command = _skip_command_prefix(words)
+    if command >= len(words):
+        return False
+
+    name = os.path.basename(words[command])
+    if name == "rm":
+        return _rm_is_dangerous(words[command:])
+    if name == "find":
+        return any(
+            _rm_is_dangerous(payload, brace_target=True)
+            for payload in _find_exec_payloads(words)
+            if os.path.basename(payload[0]) == "rm"
+        )
+    return False
+
+
+def _shell_c_payload(words: list[str]) -> str | None:
+    """Return the command string of ``sh -c …``, if this is that shape."""
+    command = _skip_command_prefix(words)
+    if command >= len(words):
+        return None
+    if os.path.basename(words[command]) not in _SHELLS:
+        return None
+    rest = words[command + 1 :]
+    for index, token in enumerate(rest):
+        if token == "-c" and index + 1 < len(rest):
+            return rest[index + 1]
+    return None
 
 
 def validate_command(command: str) -> None:
@@ -208,6 +366,16 @@ def validate_command(command: str) -> None:
     if _is_unsafe_mode():
         return
 
+    _validate(command, 0)
+
+
+def _validate(command: str, depth: int) -> None:
+    """Run the deny-list checks at recursion *depth* (``sh -c`` payloads).
+
+    Args:
+        command: The command string to check.
+        depth: Current ``sh -c`` nesting depth.
+    """
     # 1. Checks that need the unsplit command
     for pattern, reason in _FULL_COMMAND_PATTERNS:
         if pattern.search(command):
@@ -219,11 +387,19 @@ def validate_command(command: str) -> None:
         stripped = segment.strip()
         if not stripped:
             continue
-        if _is_dangerous_rm(stripped):
+        if _segment_is_dangerous_rm(stripped):
             raise ValueError(
                 "Dangerous command blocked: Recursive forced deletion of "
                 "root, home, or wildcard paths"
             )
+        command_name = _command_name(stripped)
+        if command_name == "eval":
+            raise ValueError("Dangerous command blocked: Arbitrary code evaluation")
+        if command_name == "exec":
+            raise ValueError("Dangerous command blocked: Process replacement via exec")
+        payload = _shell_c_payload(_tokenize(stripped))
+        if payload is not None and depth < _MAX_SHELL_C_DEPTH:
+            _validate(payload, depth + 1)
         for pattern, reason in DANGER_PATTERNS:
             if pattern.search(stripped):
                 raise ValueError(f"Dangerous command blocked: {reason}")

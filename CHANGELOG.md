@@ -19,6 +19,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Command segments are now split on a single `|` as the comment always claimed, so per-segment
   checks also see the right-hand side of a pipe (for example `echo ok | rm -rf /x`).
 - The fork bomb check moved to a whole-command pass, so splitting on `|` cannot tear it apart.
+- `find -exec` / `-execdir` payloads are validated as commands of their own, and a `{}` target
+  counts as protected when recursive and force are combined. This restores blocking of
+  `find / -exec rm -rf {} +`, which the anchored `exec` pattern would otherwise have missed.
+- Wrapper chains are parsed before the command word is judged: `sudo -u root rm -r -f /x`,
+  `env -i rm …`, `nice -n 5 rm …`, `timeout 5 rm …` and `xargs rm …` are blocked, as are
+  `env exec …`, `nohup exec …` and `time exec …`.
+- Shell `-c` payloads are validated recursively (bounded to four levels), so
+  `sh -c 'rm -r -f /x'` and `bash -c 'exec …'` are blocked; previously only the clustered
+  spelling was caught, by the old `rm` regex.
+- `--recursive=false` (and other false spellings) no longer counts as recursive.
+
+Known limit, unchanged: an interpreter's `-c` payload (`python -c …`) is not parsed, and
+`sh -c` recursion stops at four levels. The deny list is a speed bump, not a sandbox.
 
 ## [0.3.0] - 2026-10-22
 

@@ -138,6 +138,14 @@ class TestBashToolSafeCommands:
             "grep -r 'import' src/",
             "sudo apt update",
             "sudo systemctl restart nginx",
+            # eval/exec as an argument or a flag value is not execution (#191).
+            "find . -name '*.py' -exec wc -l {} +",
+            "python -m pytest -k exec",
+            "grep -rn eval src/",
+            "echo done > eval.txt",
+            # Recursive delete of a local build directory is normal work.
+            "rm -rf ./build",
+            "rm -r ./build",
         ],
     )
     def test_safe_commands_pass(self, cmd):
@@ -172,6 +180,15 @@ class TestBashToolDangerousCommands:
             ("reboot", "reboot"),
             ("halt", "halt"),
             ("kill -9 1", "init process"),
+            # Same flags, spelled separately or long-form (#191).
+            ("rm -r -f /home/user", "Recursive forced deletion"),
+            ("rm -f -r /home/user", "Recursive forced deletion"),
+            ("rm --recursive --force /home/user", "Recursive forced deletion"),
+            ("rm -Rf /home/user", "Recursive forced deletion"),
+            ("echo ok | rm -rf /home/user", "Recursive forced deletion"),
+            ("eval 'echo hi'", "evaluation"),
+            ("sudo eval 'echo hi'", "evaluation"),
+            ("exec /bin/sh", "exec"),
         ],
     )
     def test_dangerous_commands_blocked(self, cmd, reason_fragment):

@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.3.1] - 2026-10-22
+
+### Fixed
+
+- `eval` and `exec` are only blocked when they are the invoked command. The previous unanchored
+  patterns refused routine work such as `find . -exec wc -l {} +`, `grep -rn eval src/` and
+  `echo done > eval.txt`.
+- `rm` flags are normalised before the dangerous-delete check, so separated and long-form
+  spellings are treated like the clustered one: `rm -r -f /x`, `rm -f -r /x`,
+  `rm --recursive --force /x` and `rm -Rf /x` are now blocked alongside `rm -rf /x`.
+  Recursive deletes of local paths (`rm -rf ./build`) remain allowed.
+- Command segments are now split on a single `|` as the comment always claimed, so per-segment
+  checks also see the right-hand side of a pipe (for example `echo ok | rm -rf /x`).
+- The fork bomb check moved to a whole-command pass, so splitting on `|` cannot tear it apart.
+
 ## [0.3.0] - 2026-10-22
 
 ### Changed
